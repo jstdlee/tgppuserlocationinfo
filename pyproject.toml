@@ -7,6 +7,8 @@ requires-python = ">=3.12"
 dependencies = [
     "typer>=0.15.2",
 ]
+homepage = "https://github.com/jstdlee/tgppuserlocationinfo"
+
 
 [project.scripts]
 tgppuserlocationinfo = "tgppuserlocationinfo.main:app"
