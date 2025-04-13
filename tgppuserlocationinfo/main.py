@@ -44,7 +44,6 @@ def format_to_utf8(data: bytes) -> str:
             result.append(f"\\x{byte:02x}")
     return "".join(result)
 
-@app.command()
 def decode(hex_string: str):
     """
     Decode a 3GPP-User-Location-Info hexadecimal string and output in JSON format.
@@ -258,5 +257,19 @@ def decode(hex_string: str):
     typer.echo(json.dumps(result, indent=2))
     return 0  # Explicitly return success exit code
 
+@app.command()
+def decode_location_info(hex_string: str):
+    """
+    Command-line interface for decoding 3GPP User Location Info.
+    
+    Args:
+        hex_string (str): Hexadecimal string to decode.
+    """
+    try:
+        decode(hex_string)
+    except Exception as e:
+        typer.echo(json.dumps({"error": str(e)}, indent=2))
+        raise typer.Exit(code=1)
+    
 if __name__ == "__main__":
     app()
