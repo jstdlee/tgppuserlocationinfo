@@ -78,10 +78,16 @@ def decode(hex_string: str):
     # Check the first byte (Geographic Location Type)
     geo_type = data[0]
     expected_lengths = {
-        128: 7,  # CGI
-        129: 7,  # SAI
-        130: 13, # TAI and ECGI
-        132: 6   # 5G TAI
+        0: 7,   # CGI
+        1: 7,   # SAI  
+        2: 7,   # RAI
+        128: 7, # TAI
+        129: 7, # ECGI 
+        130: 13,# TAI and ECGI
+        131: 7, # eNodeB ID
+        132: 7, # TAI and eNodeB ID
+        133: 7, # extended eNodeB ID
+        134: 7  # TAI and extended eNodeB ID
     }
     
     if geo_type not in expected_lengths:
@@ -91,7 +97,7 @@ def decode(hex_string: str):
         raise typer.Exit(code=1)
     
     expected_length = expected_lengths[geo_type]
-    if len(data) != expected_length:
+    if len(data) < expected_length:
         typer.echo(json.dumps({
             "error": f"Expected {expected_length} bytes for type {geo_type}, got {len(data)} bytes."
         }, indent=2))
@@ -108,7 +114,26 @@ def decode(hex_string: str):
     }
     
     # Decode based on the type
-    if geo_type == 128:  # CGI
+    if geo_type == 0:  # CGI
+        plmn_bytes = data[1:4]
+        lac = int.from_bytes(data[4:6], 'big')  # Location Area Code
+        ci = int.from_bytes(data[6:8], 'big')   # Cell Identity
+        mcc, mnc = decode_plmn(plmn_bytes)
+        result["DecodedComponents"]["CGI"] = {
+            "Hex": data[1:].hex(),
+            "MCC": mcc,
+            "MNC": mnc,
+            "LAC": {
+                "Decimal": lac,
+                "Hex": data[4:6].hex()
+            },
+            "CI": {
+                "Decimal": ci,
+                "Hex": data[6:8].hex()
+            }
+        }
+    
+    elif geo_type == 128:  # TAI
         plmn_bytes = data[1:4]
         lac = int.from_bytes(data[4:6], 'big')
         ci = int.from_bytes(data[6:8], 'big')
@@ -128,6 +153,11 @@ def decode(hex_string: str):
         }
     
     elif geo_type == 129:  # SAI
+        if len(data) != 7:
+            typer.echo(json.dumps({
+                "error": f"Expected 7 bytes for SAI, got {len(data)} bytes."
+            }, indent=2))
+            raise typer.Exit(code=1)
         plmn_bytes = data[1:4]
         lac = int.from_bytes(data[4:6], 'big')
         sac = int.from_bytes(data[6:8], 'big')
@@ -142,6 +172,44 @@ def decode(hex_string: str):
             },
             "SAC": {
                 "Decimal": sac,
+                "Hex": data[6:8].hex()
+            }
+        }
+    
+    elif geo_type == 1:  # SAI
+        plmn_bytes = data[1:4]
+        lac = int.from_bytes(data[4:6], 'big')  # Location Area Code
+        sac = int.from_bytes(data[6:8], 'big')  # Service Area Code
+        mcc, mnc = decode_plmn(plmn_bytes)
+        result["DecodedComponents"]["SAI"] = {
+            "Hex": data[1:].hex(),
+            "MCC": mcc,
+            "MNC": mnc,
+            "LAC": {
+                "Decimal": lac,
+                "Hex": data[4:6].hex()
+            },
+            "SAC": {
+                "Decimal": sac,
+                "Hex": data[6:8].hex()
+            }
+        }
+    
+    elif geo_type == 2:  # RAI
+        plmn_bytes = data[1:4]
+        lac = int.from_bytes(data[4:6], 'big')  # Location Area Code
+        rac = int.from_bytes(data[6:8], 'big')  # Routing Area Code
+        mcc, mnc = decode_plmn(plmn_bytes)
+        result["DecodedComponents"]["RAI"] = {
+            "Hex": data[1:].hex(),
+            "MCC": mcc,
+            "MNC": mnc,
+            "LAC": {
+                "Decimal": lac,
+                "Hex": data[4:6].hex()
+            },
+            "RAC": {
+                "Decimal": rac,
                 "Hex": data[6:8].hex()
             }
         }
