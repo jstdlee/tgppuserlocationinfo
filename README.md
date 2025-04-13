@@ -5,6 +5,10 @@
 
 A Python package for handling and processing user location information with precision and ease.
 
+## references
+1. 3gpp 29061
+2. 3gpp 29273
+
 ## 🚀 Features
 
 - User location data processing
