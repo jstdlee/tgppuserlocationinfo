@@ -127,7 +127,11 @@ def _xenb(raw: bytes) -> dict:
 
 
 def _ncgi(raw: bytes, gnb_bits: int) -> dict:
-    """NCGI: PLMN + NR Cell Identity, 36 bits right aligned in 5 octets."""
+    """NCGI: PLMN + NR Cell Identity (TS 29.061 type 135, TS 38.413 9.3.1.7).
+
+    36 bits right aligned in 5 octets; the 4 high bits are spare, as in the
+    ECI of TS 29.274 8.21.5.
+    """
     nci = int.from_bytes(raw[3:8], "big") & 0xFFFFFFFFF
     cell_bits = 36 - gnb_bits
     return {"hex": raw.hex(), **_plmn_dict(raw[:3]),
@@ -208,6 +212,6 @@ def decode_location(data: str | bytes, gnb_id_bits: int = DEFAULT_GNB_ID_BITS
     elif t == 134: c["TAI"], c["eNodeB"] = _tai(b[:5]), _xenb(b[5:])
     elif t == 135: c["NCGI"] = _ncgi(b, gnb_id_bits)
     elif t == 136:
-        tai_len = len(b) - 8  # 5 (2-byte TAC) or 6 (3-byte 5GS TAC)
+        tai_len = len(b) - 8  # TS 29.061: TAI per 29.274 8.21.4 (2-byte TAC) = 5; 6 is a lenient 3-byte 5GS TAC
         c["TAI"], c["NCGI"] = _tai(b[:tai_len]), _ncgi(b[tai_len:], gnb_id_bits)
     return LocationInfo(t, TYPE_NAMES[t], raw, c)
