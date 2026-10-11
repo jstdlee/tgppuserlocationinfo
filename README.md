@@ -6,8 +6,9 @@
 A Python package for handling and processing user location information with precision and ease.
 
 ## references
-1. 3gpp 29061
-2. 3gpp 29273
+1. 3GPP TS 29.061, clause 16.4.7.2 (3GPP-User-Location-Info)
+2. 3GPP TS 29.274, clause 8.21 (CGI, SAI, RAI, TAI, ECGI, eNodeB ID fields)
+3. 3GPP TS 38.413, clause 9.3.1.7 (NR-CGI)
 
 ## Features
 

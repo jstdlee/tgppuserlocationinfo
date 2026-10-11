@@ -132,3 +132,73 @@ def test_cli_errors():
     assert r.exit_code == 1 and "Invalid hexadecimal string." in r.stdout
     r = runner.invoke(app, ["8202f480"])
     assert r.exit_code == 1 and "Expected 13 bytes for type 130, got 4" in r.stdout
+
+
+# Vectors built by hand from TS 29.274 figs 8.21.1-1 .. 8.21.8-1 (octet 1 = MCC2|MCC1,
+# octet 2 = MNC3|MCC3, octet 3 = MNC2|MNC1).
+@pytest.mark.parametrize("hexplmn,mcc,mnc", [
+    ("130062", "310", "260"),   # 3-digit MNC
+    ("64f000", "460", "00"),    # 2-digit MNC with leading zero
+    ("00f110", "001", "01"),    # leading-zero MCC, 2-digit MNC
+    ("42f210", "242", "01"),
+    ("32f504", "235", "40"),    # 3GPP example: MCC 235 MNC 40
+])
+def test_plmn_hand_vectors(hexplmn, mcc, mnc):
+    p = decode_plmn(bytes.fromhex(hexplmn))
+    assert (p.mcc, p.mnc) == (mcc, mnc)
+
+
+def test_mnc_three_digits_keeps_leading_zero():
+    # MCC 234, MNC 015: MCC2|MCC1=0x32, MNC3|MCC3=0x54, MNC2|MNC1=0x10
+    p = decode_plmn(bytes([(3 << 4) | 2, (5 << 4) | 4, (1 << 4) | 0]))
+    assert (p.mcc, p.mnc) == ("234", "015")
+
+
+def test_ecgi_hand_built_bit_layout():
+    # ECI = 28 bits starting at bit 4 of octet e+3: octets 0x0A 0xBC 0xDE 0xF1
+    r = decode_location("8102f4800abcdef1").components["ECGI"]
+    assert r["eci"]["decimal"] == 0xABCDEF1
+    assert (r["enb_id"], r["cell_id"]) == (0xABCDE, 0xF1)
+
+
+def test_extended_enodeb_spare_bits_ignored():
+    # long: bit 8 = 0, bits 7-6 spare (set), 21 bit value 0x0AAAAA
+    r = decode_location("8502f480" + "6aaaaa").components["eNodeB"]
+    assert (r["bits"], r["enb_id"]["decimal"]) == (21, 0x0AAAAA)
+    # short: SMeNB=1, bits 5-3 junk (ignored), 18 bit value 0x2AAAA
+    r = decode_location("8502f480" + "bd" + "aaaa").components["eNodeB"]
+    assert (r["bits"], r["enb_id"]["decimal"]) == (18, 0x1AAAA)
+
+
+@pytest.mark.parametrize("h", ["0x8002f4808790", "0X80 02 F4 80 87 90",
+                               "80:02:f4:80:87:90", " 80-02-f4-80-87-90\n"])
+def test_hex_input_forms(h):
+    assert decode_location(h).components["TAI"]["tac"]["decimal"] == 0x8790
+
+
+@pytest.mark.parametrize("h", ["8002f480879", "0x", "   ", "8002f48087900", "8002f480879000"])
+def test_hex_input_rejected(h):
+    with pytest.raises(DecodeError):
+        decode_location(h)
+
+
+def test_too_long_and_bytearray():
+    with pytest.raises(DecodeError):
+        decode_location("8202f480879002f480003a0d2100")
+    assert decode_location(bytearray.fromhex("8002f4808790")).geo_type == 128
+
+
+def test_gnb_id_bits_bounds():
+    for bad in (21, 33):
+        with pytest.raises(DecodeError):
+            decode_location("8702f4800123456789", gnb_id_bits=bad)
+    r = decode_location("8702f4800123456789", gnb_id_bits=22).components["NCGI"]
+    assert (r["gnb_id"], r["cell_id"]) == (0x123456789 >> 14, 0x123456789 & 0x3FFF)
+
+
+def test_cli_gnb_bits_and_exit_codes():
+    r = runner.invoke(app, ["8702f4800123456789", "--gnb-id-bits", "32"])
+    assert r.exit_code == 0 and json.loads(r.stdout)["components"]["NCGI"]["gnb_id"] == 0x12345678
+    r = runner.invoke(app, ["8702f4800123456789", "--gnb-id-bits", "21"])
+    assert r.exit_code == 1 and "gnb_id_bits" in r.stdout
+    assert runner.invoke(app, [""]).exit_code == 1
