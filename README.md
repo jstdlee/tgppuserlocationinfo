@@ -9,36 +9,30 @@ A Python package for handling and processing user location information with prec
 1. 3gpp 29061
 2. 3gpp 29273
 
-## 🚀 Features
+## Features
 
-- User location data processing
-- Easy-to-use API
-- Lightweight and efficient
-- Python 3.12+ support
+Decodes 3GPP-User-Location-Info (TS 29.061 clause 16.4.7.2, layouts from TS 29.274 sec 8.21 and TS 38.413 sec 9.3.1.7):
 
-## 📦 Installation
+| Type | Name | Bytes |
+|---|---|---|
+| 0 / 1 / 2 | CGI / SAI / RAI (3G, Gn per TS 29.060) | 8 |
+| 128 / 129 / 130 | TAI / ECGI / TAI+ECGI (4G) | 6 / 8 / 13 |
+| 131 / 132 | eNodeB ID (20 bit) / TAI+eNodeB ID | 7 / 12 |
+| 133 / 134 | extended eNodeB ID (21 or 18 bit) / TAI+ext | 7 / 12 |
+| 135 / 136 | NCGI (36 bit NCI) / TAI+NCGI (5G) | 9 / 14 (15 with 3-byte 5GS TAC) |
 
-```bash
-uv pip install tgppuserlocationinfo
-```
-
-## 🖥️ Usage Example
-
+PLMN uses BCD digits; MNC digit 3 = 0xF gives a 2-digit MNC. The gNB ID length is not in the attribute: pass `--gnb-id-bits` (22..32, default 24).
 
 ```python
-# save this as example.py
-from tgppuserlocationinfo import decode
-
-data = "8202f480879002f480003a0d21"
-decoded_data = decode(data)
-print(f"Decoded Data: {decoded_data}")
+from tgppuserlocationinfo import decode_location
+info = decode_location("8202f480879002f480003a0d21")   # hex or bytes
+print(info)            # human readable
+print(info.to_json())  # JSON
+info.to_dict()["components"]["ECGI"]["eci"]["decimal"]
 ```
 
 ```bash
-python -m tgppuserlocationinfo 8202f480879002f480003a0d21
-
-# or run exe
-tgppuserlocationinfo.exe 8202f480879002f480003a0d21
+python -m tgppuserlocationinfo 8202f480879002f480003a0d21 --text
 ```
 
 ## 📋 Requirements
