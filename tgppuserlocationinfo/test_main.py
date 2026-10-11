@@ -6,7 +6,10 @@ from typer.testing import CliRunner
 from tgppuserlocationinfo import DecodeError, decode, decode_location, decode_plmn
 from tgppuserlocationinfo.main import app
 
-runner = CliRunner()
+try:  # Click < 8.2 mixes stderr into stdout unless told otherwise
+    runner = CliRunner(mix_stderr=False)
+except TypeError:  # Click >= 8.2 always keeps them apart
+    runner = CliRunner()
 
 
 def test_plmn_two_digit():
@@ -96,11 +99,65 @@ def test_ncgi_gnb_split():
     assert (r["gnb_id"], r["cell_id"]) == (0x12345678, 0x9)
 
 
-def test_tai_ncgi_2byte_and_3byte_tac():
-    c = decode_location("8802f480abcd02f4800123456789").components
-    assert c["TAI"]["tac"]["decimal"] == 0xABCD and c["NCGI"]["gnb_id"] == 0x123456
-    c = decode_location("8802f480abcdef02f4800123456789").components
-    assert c["TAI"]["tac"]["decimal"] == 0xABCDEF and c["TAI"]["tac"]["hex"] == "abcdef"
+def test_5gs_tai_3byte_tac():
+    # Type 136 = 5GS TAI only: PLMN + 3-octet TAC (TS 29.061, TS 38.413 9.3.3.11)
+    r = decode_location("8802f480abcdef")
+    assert r.type_name == "5GS TAI" and list(r.components) == ["TAI"]
+    tac = r.components["TAI"]["tac"]
+    assert tac == {"decimal": 0xABCDEF, "hex": "abcdef"}
+
+
+def test_5gs_tai_and_ncgi():
+    # Type 137: TAI (3-byte TAC) then NCGI
+    r = decode_location("8902f480abcdef02f4800123456789")
+    assert r.type_name == "5GS TAI+NCGI"
+    assert r.components["TAI"]["tac"]["decimal"] == 0xABCDEF
+    n = r.components["NCGI"]
+    assert n["nci"]["decimal"] == 0x123456789 and n["gnb_id"] == 0x123456
+    assert not r.warnings
+
+
+@pytest.mark.parametrize("h,frag", [
+    ("8802f480abcd02f4800123456789", "TAI and NCGI is type 137"),  # old 136 layout
+    ("8802f480abcdef02f4800123456789", "TAI and NCGI is type 137"),
+    ("8802f480abcd", "Expected 7 bytes for type 136"),
+    ("8902f480abcd02f4800123456789", "Expected 15 bytes for type 137"),
+    ("8a0e12", "not supported"),   # 138 NG-RAN Node ID
+    ("8b0e12", "not supported"),   # 139 5GS TAI + NG-RAN Node ID
+])
+def test_5g_type_errors(h, frag):
+    with pytest.raises(DecodeError, match=frag):
+        decode_location(h)
+
+
+def test_ncgi_spare_nibble_warning():
+    # Spare bits must be zero. A set high nibble is masked and flagged,
+    # because Wireshark reads the spare bits in the low nibble instead.
+    r = decode_location("8702f480f123456789")
+    assert r.components["NCGI"]["nci"]["decimal"] == 0x123456789
+    assert len(r.warnings) == 1 and "spare" in r.warnings[0]
+    assert json.loads(r.to_json())["warnings"] == r.warnings
+    assert "warning:" in str(r)
+    assert "warnings" not in decode_location("8702f4800123456789").to_dict()
+
+
+# Regression vectors from independent implementations / data (see SOURCES in
+# the README). No real packet capture with types 135-137 was found.
+@pytest.mark.parametrize("h,check", [
+    # sigscale/ocs ocs_log.erl layout + cgrates uli_test.go vectors
+    ("871300620123456789", lambda c: c["NCGI"]["nci"]["decimal"] == 0x123456789
+        and (c["NCGI"]["mcc"], c["NCGI"]["mnc"]) == ("310", "260")),
+    ("88130062123456", lambda c: c["TAI"]["tac"]["decimal"] == 0x123456),
+    ("891300620000011300620000000101", lambda c: c["TAI"]["tac"]["decimal"] == 1
+        and c["NCGI"]["nci"]["decimal"] == 257),
+    # CHF CDR text dump (cdr1.txt): TAI 640/001 TAC H'131150, NCGI NRCI H'0000000001
+    ("894610001311504610000000000001", lambda c: c["TAI"]["tac"]["decimal"] == 0x131150
+        and (c["TAI"]["mcc"], c["TAI"]["mnc"]) == ("640", "001")
+        and c["NCGI"]["nci"]["decimal"] == 1),
+], ids=["ncgi-cgrates", "5gs-tai-cgrates", "5gs-tai-ncgi-cgrates", "5gs-tai-ncgi-cdr"])
+def test_5g_regression_vectors(h, check):
+    r = decode_location(h)
+    assert check(r.components) and not r.warnings
 
 
 def test_bytes_and_prefix_input():
@@ -125,13 +182,25 @@ def test_cli_json_and_text():
     assert r.exit_code == 0 and '"geo_type": 130' in r.stdout
     r = runner.invoke(app, ["8202f480879002f480003a0d21", "--text"])
     assert "TAI+ECGI" in r.stdout
+    r = runner.invoke(app, ["8202f480879002f480003a0d21", "--json"])
+    assert r.exit_code == 0 and json.loads(r.stdout)["geo_type"] == 130
+    assert r.stdout == runner.invoke(app, ["8202f480879002f480003a0d21"]).stdout
+    assert r.stderr == ""
+
+
+def test_cli_text_json_exclusive():
+    r = runner.invoke(app, ["8002f4808790", "--text", "--json"])
+    assert r.exit_code == 1 and r.stdout == ""
+    assert "mutually exclusive" in json.loads(r.stderr)["error"]
 
 
 def test_cli_errors():
     r = runner.invoke(app, ["invalidhex"])
-    assert r.exit_code == 1 and "Invalid hexadecimal string." in r.stdout
+    assert r.exit_code == 1 and r.stdout == ""
+    assert json.loads(r.stderr)["error"] == "Invalid hexadecimal string."
     r = runner.invoke(app, ["8202f480"])
-    assert r.exit_code == 1 and "Expected 13 bytes for type 130, got 4" in r.stdout
+    assert r.exit_code == 1 and r.stdout == ""
+    assert "Expected 13 bytes for type 130, got 4" in json.loads(r.stderr)["error"]
 
 
 # Vectors built by hand from TS 29.274 figs 8.21.1-1 .. 8.21.8-1 (octet 1 = MCC2|MCC1,
@@ -200,5 +269,6 @@ def test_cli_gnb_bits_and_exit_codes():
     r = runner.invoke(app, ["8702f4800123456789", "--gnb-id-bits", "32"])
     assert r.exit_code == 0 and json.loads(r.stdout)["components"]["NCGI"]["gnb_id"] == 0x12345678
     r = runner.invoke(app, ["8702f4800123456789", "--gnb-id-bits", "21"])
-    assert r.exit_code == 1 and "gnb_id_bits" in r.stdout
-    assert runner.invoke(app, [""]).exit_code == 1
+    assert r.exit_code == 1 and r.stdout == "" and "gnb_id_bits" in r.stderr
+    r = runner.invoke(app, [""])
+    assert r.exit_code == 1 and r.stdout == "" and "Empty input" in r.stderr

@@ -5,8 +5,12 @@ Sources
   Geographic Location Type values and the layout of the Geographic Location.
 - TS 29.274 clauses 8.21.1-8.21.8 (CGI, SAI, RAI, TAI, ECGI, macro eNodeB ID,
   extended macro eNodeB ID) and TS 23.003 clause 2.2 (PLMN BCD digits).
-- TS 38.413 clause 9.3.1.7 (NR-CGI, 36-bit NR Cell Identity) and
-  TS 38.300 / TS 38.413 clause 9.3.1.6 (gNB ID, 22..32 bits).
+- TS 38.413 clause 9.3.1.7 (NR-CGI, 36-bit NR Cell Identity), 9.3.3.11
+  (TAI, TAC = 3 octets) and clause 9.3.1.6 (gNB ID, 22..32 bits).
+
+5G types (TS 29.061 Rel-19): 135 NCGI, 136 5GS TAI, 137 5GS TAI and NCGI,
+138 NG-RAN Node ID, 139 5GS TAI and NG-RAN Node ID. Types 138 and 139 are
+known but not decoded.
 
 For GGSN (Gn) the types 0-2 follow TS 29.060 and have the same layout.
 """
@@ -30,12 +34,17 @@ TYPE_NAMES = {
     133: "extended eNodeB ID",
     134: "TAI+extended eNodeB ID",
     135: "NCGI",
-    136: "TAI+NCGI",
+    136: "5GS TAI",
+    137: "5GS TAI+NCGI",
+    138: "NG-RAN Node ID",
+    139: "5GS TAI+NG-RAN Node ID",
 }
 
-# Total length in bytes (type octet included). 136 also allows a 3-byte TAC.
+# Total length in bytes (type octet included). The 5GS TAC has 3 octets.
 _LENGTHS = {0: 8, 1: 8, 2: 8, 128: 6, 129: 8, 130: 13, 131: 7, 132: 12,
-            133: 7, 134: 12, 135: 9, 136: (14, 15)}
+            133: 7, 134: 12, 135: 9, 136: 7, 137: 15}
+# Defined in TS 29.061 but not decoded here (the NG-RAN Node ID is variable).
+_UNSUPPORTED = (138, 139)
 
 
 class DecodeError(ValueError):
@@ -129,8 +138,10 @@ def _xenb(raw: bytes) -> dict:
 def _ncgi(raw: bytes, gnb_bits: int) -> dict:
     """NCGI: PLMN + NR Cell Identity (TS 29.061 type 135, TS 38.413 9.3.1.7).
 
-    36 bits right aligned in 5 octets; the 4 high bits are spare, as in the
-    ECI of TS 29.274 8.21.5.
+    The NCI is 36 bits, right aligned in 5 octets; the 4 high bits are spare
+    and zero (as the ECI in TS 29.274 8.21.5). Wireshark's GTPv2 dissector
+    masks 0xfffffffff0 instead (spare in the low nibble); this decoder
+    follows the spec text and warns if the high nibble is not zero.
     """
     nci = int.from_bytes(raw[3:8], "big") & 0xFFFFFFFFF
     cell_bits = 36 - gnb_bits
@@ -147,10 +158,14 @@ class LocationInfo:
     type_name: str
     raw: bytes
     components: dict = field(default_factory=dict)
+    warnings: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {"geo_type": self.geo_type, "type_name": self.type_name,
-                "raw_hex": self.raw.hex(), "components": self.components}
+        d = {"geo_type": self.geo_type, "type_name": self.type_name,
+             "raw_hex": self.raw.hex(), "components": self.components}
+        if self.warnings:
+            d["warnings"] = list(self.warnings)
+        return d
 
     def to_json(self, indent: int | None = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent)
@@ -161,6 +176,7 @@ class LocationInfo:
             parts = [f"{k}={v['decimal'] if isinstance(v, dict) else v}"
                      for k, v in c.items() if k != "hex"]
             lines.append(f"  {name}: " + " ".join(parts))
+        lines += [f"  warning: {w}" for w in self.warnings]
         return "\n".join(lines)
 
 
@@ -190,14 +206,22 @@ def decode_location(data: str | bytes, gnb_id_bits: int = DEFAULT_GNB_ID_BITS
     if not raw:
         raise DecodeError("Empty input.")
     t = raw[0]
+    if t in _UNSUPPORTED:
+        raise DecodeError(f"Geographic Location Type {t} "
+                          f"({TYPE_NAMES[t]}) is defined in TS 29.061 but "
+                          f"not supported.")
     if t not in _LENGTHS:
         raise DecodeError(f"Unsupported Geographic Location Type: {t}. "
                           f"Supported types: {sorted(_LENGTHS)}")
     exp = _LENGTHS[t]
     allowed = exp if isinstance(exp, tuple) else (exp,)
     if len(raw) not in allowed:
+        hint = ""
+        if t == 136 and len(raw) in (14, 15):
+            hint = (" Type 136 is the 5GS TAI only (TS 29.061); "
+                    "TAI and NCGI is type 137.")
         raise DecodeError(f"Expected {' or '.join(map(str, allowed))} bytes "
-                          f"for type {t}, got {len(raw)} bytes.")
+                          f"for type {t}, got {len(raw)} bytes.{hint}")
     b = raw[1:]
     c: dict = {}
     if t == 0: c["CGI"] = _cgi(b)
@@ -211,7 +235,13 @@ def decode_location(data: str | bytes, gnb_id_bits: int = DEFAULT_GNB_ID_BITS
     elif t == 133: c["eNodeB"] = _xenb(b)
     elif t == 134: c["TAI"], c["eNodeB"] = _tai(b[:5]), _xenb(b[5:])
     elif t == 135: c["NCGI"] = _ncgi(b, gnb_id_bits)
-    elif t == 136:
-        tai_len = len(b) - 8  # TS 29.061: TAI per 29.274 8.21.4 (2-byte TAC) = 5; 6 is a lenient 3-byte 5GS TAC
-        c["TAI"], c["NCGI"] = _tai(b[:tai_len]), _ncgi(b[tai_len:], gnb_id_bits)
-    return LocationInfo(t, TYPE_NAMES[t], raw, c)
+    elif t == 136: c["TAI"] = _tai(b)  # 3-byte TAC (TS 38.413 9.3.3.11)
+    elif t == 137: c["TAI"], c["NCGI"] = _tai(b[:6]), _ncgi(b[6:], gnb_id_bits)
+    warnings = []
+    if "NCGI" in c and b[-5] & 0xF0:
+        warnings.append(
+            "NR Cell Identity spare bits (high nibble) are not zero "
+            f"({b[-5:].hex()}); decoded as 36 bits right aligned per "
+            "TS 29.061 / TS 38.413. Some implementations (Wireshark) "
+            "place the spare bits in the low nibble.")
+    return LocationInfo(t, TYPE_NAMES[t], raw, c, warnings)
